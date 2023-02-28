@@ -41,14 +41,29 @@ defmodule Bureaucrat.Recorder do
   end
 
   def handle_cast({:doc, conn, opts}, records) do
-    conn =
-      conn
-      |> Plug.Conn.assign(:bureaucrat_desc, opts[:description])
-      |> Plug.Conn.assign(:bureaucrat_file, opts[:file])
-      |> Plug.Conn.assign(:bureaucrat_line, opts[:line])
-      |> Plug.Conn.assign(:bureaucrat_opts, opts)
+    cond do
+      conn.status == 401 ->
+        {:noreply, records}
 
-    {:noreply, [conn | records]}
+      conn.status not in [200, 201] ->
+        {:noreply, records}
+
+      route_exists?(records, conn) ->
+        {:noreply, records}
+
+      true ->
+        view = conn.private[:phoenix_view]
+        Bureaucrat.TypeCollector.register_types(view)
+
+        conn =
+          conn
+          |> Plug.Conn.assign(:bureaucrat_desc, opts[:description])
+          |> Plug.Conn.assign(:bureaucrat_file, opts[:file])
+          |> Plug.Conn.assign(:bureaucrat_line, opts[:line])
+          |> Plug.Conn.assign(:bureaucrat_opts, opts)
+
+        {:noreply, [conn | records]}
+    end
   end
 
   def handle_cast({:channel_doc, message, opts}, records) do
@@ -57,5 +72,14 @@ defmodule Bureaucrat.Recorder do
 
   def handle_call(:get_records, _from, records) do
     {:reply, records, records}
+  end
+
+  defp route_exists?(records, conn) do
+    conn_route_info = Phoenix.Router.route_info(conn.private[:phoenix_router], conn.method, conn.request_path, conn)
+
+    Enum.find(records, fn record ->
+      record_route_info = Phoenix.Router.route_info(record.private[:phoenix_router], record.method, record.request_path, record)
+      record_route_info.route == conn_route_info.route && record_route_info.plug_opts == conn_route_info.plug_opts
+    end)
   end
 end

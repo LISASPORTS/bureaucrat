@@ -113,17 +113,17 @@ defmodule Bureaucrat.Helpers do
 
     opts =
       opts
-      |> Keyword.put_new(:description, format_test_name(fun))
       |> Keyword.put_new(:group_title, group_title_for(mod, titles))
       |> Keyword.put(:module, mod)
       |> Keyword.put(:file, file)
       |> Keyword.put(:line, line)
 
-    quote bind_quoted: [conn: conn, opts: opts] do
+    quote bind_quoted: [conn: conn, opts: opts, fun: fun] do
       default_operation_id = get_default_operation_id(conn)
 
       opts =
         opts
+        |> Keyword.put_new(:description, format_test_name(conn, fun))
         |> Keyword.put_new(:operation_id, default_operation_id)
 
       Bureaucrat.Recorder.doc(conn, opts)
@@ -131,7 +131,15 @@ defmodule Bureaucrat.Helpers do
     end
   end
 
-  def format_test_name("test " <> name), do: name
+  def format_test_name(conn, "test " <> name) do
+    if Application.get_env(:bureaucrat, :routes_as_titles) do
+      method = conn.method |> to_string() |> String.upcase()
+      router_path = Phoenix.Router.route_info(conn.private[:phoenix_router], method, conn.request_path, conn.host)
+      "#{method} #{router_path[:route]}"
+    else
+      name
+    end
+  end
 
   def group_title_for(_mod, []), do: nil
 
@@ -195,4 +203,124 @@ defmodule Bureaucrat.Helpers do
     |> Plug.Conn.put_private(:phoenix_controller, controller_name)
     |> Plug.Conn.put_private(:phoenix_action, action)
   end
+
+  def get_documentation_for_function(module, function) do
+    docs =
+      Code.fetch_docs(module)
+      |> Tuple.to_list()
+      |> Enum.at(6)
+      |> Enum.find(fn
+        {{_, ^function, _}, _, _, docs, _} when docs != :none -> true
+        _ -> false
+      end)
+
+    if docs do
+      docs
+      |> Tuple.to_list()
+      |> Enum.at(4)
+      |> Map.get("en")
+    else
+      # NoDocs.add(module)
+      # raise "No docs for #{module} #{function}"
+      ""
+    end
+  end
+
+  def controller_param_spec(controller, name \\ nil) do
+    {:ok, spec} = Code.Typespec.fetch_specs(controller)
+
+    {:ok, types} = Code.Typespec.fetch_types(controller)
+
+    types = group_types(types)
+
+    spec =
+      if name do
+        Enum.flat_map(spec, fn
+          {{^name, _}, [{_, _, _, [{_, _, _, types} | _]}]} -> types
+          _ -> []
+        end)
+      else
+        spec
+      end
+
+    spec
+    |> Enum.flat_map(fn
+      {_, _, [{_, _, Plug.Conn}, _, _]} -> []
+      {:remote_type, _, type_list} -> type_list
+      {:user_type, _, name, []} -> types[name]
+      other -> collect_types(other)
+    end)
+    |> normalize(types)
+    |> to_table()
+  end
+
+  defp group_types(ast) do
+    Enum.reduce(ast, %{}, fn {:type, {name, ast, _}}, acc ->
+      Map.put(acc, name, collect_types(ast))
+    end)
+  end
+
+  defp collect_types({:user_type, _, type}), do: type
+
+  defp collect_types({_, _, map, fields}) when map in ~w/map_fields_exact map/a do
+    fields
+    |> Enum.map(fn
+      {_, _, required, [{:atom, _, key}, {_, _, type_list}]} when is_list(type_list) ->
+        {key, concat_type_list(type_list), required}
+
+      {_, _, required, [{:atom, _, key}, {_, _, type}]} ->
+        {key, type, required}
+
+      {_, _, required, [{:atom, _, key}, {_, _, type, _}]} ->
+        {key, type, required}
+    end)
+  end
+
+  defp collect_types(_), do: nil
+  defp concat_type_list([atom, other_atom]) when is_atom(atom) and is_atom(other_atom), do: to_string(atom)
+
+  defp concat_type_list(type_list) when is_list(type_list) do
+    type_list
+    |> Enum.filter(&is_tuple/1)
+    |> Enum.map(&elem(&1, 2))
+  end
+
+  defp concat_type_list(type_list), do: type_list
+
+  defp normalize(list_of_types, types) do
+    list_of_types
+    |> Enum.map(fn {key, type, req} ->
+      type = concat_type_list(type)
+      user_type = types[type]
+      required? = req == :map_field_exact
+      {key, (user_type && normalize(user_type, types)) || type, required?}
+    end)
+  end
+
+  def to_table(rows) do
+    rows = Enum.map(rows, &to_row/1) |> Enum.join("\n")
+
+    table = """
+    <table>
+      <thead>
+        <tr>
+          <th>Field</th>
+          <th>Type</th>
+        </tr>
+      </thead>
+      <tbody>
+        #{rows}
+      </tbody>
+    </table>
+    """
+
+    Regex.replace(~r/Elixir./, table, "")
+  end
+
+  defp to_row(row) when is_binary(row), do: row
+  defp to_row({key, value}), do: "<tr><td>#{key}</td><td>#{value}</td></tr>"
+
+  defp to_row({key, value, required?}),
+    do:
+      "<tr><td>#{(required? && "**") || ""}#{key}#{(required? && "**") || ""}</td><td>#{(is_list(value) && to_table(value)) || value}</td></tr>"
 end

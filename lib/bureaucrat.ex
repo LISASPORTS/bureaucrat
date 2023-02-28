@@ -2,7 +2,7 @@ defmodule Bureaucrat do
   use Application
 
   def start(_type, []) do
-    children = [Bureaucrat.Recorder]
+    children = [Bureaucrat.Recorder, Bureaucrat.TypeCollector]
 
     opts = [strategy: :one_for_one, name: Bureaucrat.Supervisor]
     Supervisor.start_link(children, opts)

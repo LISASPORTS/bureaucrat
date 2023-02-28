@@ -1,15 +1,54 @@
 defmodule Bureaucrat.MarkdownWriter do
-  alias Bureaucrat.JSON
+  alias Bureaucrat.{Helpers, JSON, TypeCollector}
 
   def write(records, path) do
     {:ok, file} = File.open(path, [:write, :utf8])
     records = group_records(records)
-    write_intro(path, file)
+
+    file
+    |> puts(~s[<link rel="stylesheet" href="https://unpkg.com/@picocss/pico@1.*/css/pico.min.css">\n])
+    |> puts("""
+    <style>
+       :root {
+        --font-size: 12px
+       }
+       body {
+        display: grid;
+        grid-template-columns: 1fr 4fr;
+        grid-template-areas: "aside main main main";
+        grid-gap: 10px;
+        height: 100%
+        }
+       aside {
+        grid-area: aside;
+        margin-top: 1em;
+        border-right: 1px #eee solid;
+        }
+       main {
+        grid-area: main;
+        overflow-y: scroll;
+        }
+    </style>
+    """)
+
     write_table_of_contents(records, file)
+
+    file
+    |> puts(~s[<main class="container">\n])
+
+    write_intro(path, file)
+
+    types = TypeCollector.get_all_types()
+
+    file
+    |> puts("## Types\n\n#{types}")
 
     Enum.each(records, fn {controller, records} ->
       write_controller(controller, records, file)
     end)
+
+    file
+    |> puts(~s[</main>\n])
   end
 
   defp write_intro(path, file) do
@@ -32,22 +71,38 @@ defmodule Bureaucrat.MarkdownWriter do
       |> puts(File.read!(intro_file_path))
       |> puts("\n\n## Endpoints\n\n")
     else
-      puts(file, "# API Documentation\n")
+      puts(file, "# API Documentation\n\n")
     end
   end
 
   defp write_table_of_contents(records, file) do
-    Enum.each(records, fn {controller, actions} ->
+    file
+    |> puts(~s[<aside><section>])
+
+    records
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.each(fn {controller, actions} ->
+      actions = List.flatten(actions)
       anchor = to_anchor(controller)
-      puts(file, "  * [#{controller}](##{anchor})")
+
+      controller =
+        controller
+        |> String.split(".")
+        |> Enum.at(-1)
+        |> to_string()
+        |> String.replace("Controller", "")
+
+      puts(file, " * #### [#{controller}](##{anchor})")
 
       Enum.each(actions, fn {action, _} ->
         anchor = to_anchor(controller, action)
-        puts(file, "    * [#{action}](##{anchor})")
+        puts(file, "   * [#{action}](##{anchor})")
       end)
     end)
 
-    puts(file, "")
+    file
+    |> puts("")
+    |> puts(~s[</section></aside>])
   end
 
   defp write_controller(controller, records, file) do
@@ -140,18 +195,27 @@ defmodule Bureaucrat.MarkdownWriter do
   end
 
   defp write_example(record, file) do
-    path =
-      case record.query_string do
-        "" -> record.request_path
-        str -> "#{record.request_path}?#{str}"
-      end
+    view = record.private[:phoenix_view]
+    controller = record.private[:phoenix_controller]
+
+    route_info = Phoenix.Router.route_info(record.private[:phoenix_router], record.method, record.request_path, record)
+
+    documentation = Helpers.get_documentation_for_function(controller, route_info[:plug_opts])
 
     file
     |> puts("#### #{record.assigns.bureaucrat_desc}")
     |> puts("#{Keyword.get(record.assigns.bureaucrat_opts, :detail, "")}")
+    |> puts(documentation)
     |> puts("##### Request")
     |> puts("* __Method:__ #{record.method}")
-    |> puts("* __Path:__ #{path}")
+    |> puts("* __Path:__ #{route_info.route}")
+
+    unless route_info.plug_opts not in ~w/create update process/a do
+      file
+      |> puts("* __Request body types:__ \n\n")
+      |> puts("Fields marked in **bold** are required.\n\n")
+      |> puts(Helpers.controller_param_spec(controller, route_info.plug_opts))
+    end
 
     unless record.req_headers == [] do
       file
@@ -193,7 +257,9 @@ defmodule Bureaucrat.MarkdownWriter do
     end
 
     file
-    |> puts("* __Response body:__")
+    |> puts("* __Response body:__ \n\n")
+    |> puts(TypeCollector.get_response_types(view, %{}, route_info.plug_opts))
+    |> puts("###### Example")
     |> puts("```json")
     |> puts("#{format_resp_body(record.resp_body)}")
     |> puts("```")
@@ -210,9 +276,15 @@ defmodule Bureaucrat.MarkdownWriter do
   end
 
   defp format_resp_body(string) do
-    {:ok, struct} = JSON.decode(string)
-    {:ok, json} = JSON.encode(struct, pretty: true)
-    json
+    case JSON.decode(string) do
+      {:ok, struct} ->
+        {:ok, json} = JSON.encode(struct, pretty: true)
+
+        json
+
+      {:error, %{data: data}} ->
+        data
+    end
   end
 
   defp puts(file, string) do
