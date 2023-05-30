@@ -8,6 +8,12 @@ defmodule Bureaucrat.TypeCollector do
     Agent.start_link(fn -> %__MODULE__{} end, name: __MODULE__)
   end
 
+  def register_types(modules) when is_map(modules) do
+    for module <- Map.values(modules) do
+      register_types(module)
+    end
+  end
+
   def register_types(module) do
     Agent.update(__MODULE__, fn state ->
       do_register_types(module, state)
