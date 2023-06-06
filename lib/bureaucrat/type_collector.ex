@@ -117,6 +117,8 @@ defmodule Bureaucrat.TypeCollector do
     |> to_table()
   end
 
+  defp get_view_types(%{_: view}, schema), do: get_view_types(view, schema)
+
   defp get_view_types(view, schema) do
     fields = view.__info__(:attributes)[:attributes]
 
@@ -188,5 +190,6 @@ defmodule Bureaucrat.TypeCollector do
 
   defp write_type({key, value_type}, _), do: "<tr><td>#{key}</td><td>#{value_type}</td></tr>"
 
+  defp normalize_name(%{_: module}), do: normalize_name(module)
   defp normalize_name(module), do: module |> Module.split() |> Enum.at(-1)
 end
