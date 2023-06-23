@@ -87,6 +87,7 @@ defmodule Bureaucrat.TypeCollector do
   end
 
   def get_response_types(module, _filter, _action \\ :show) do
+    module = json_view(module)
     module_name = normalize_name(module)
 
     Agent.get(__MODULE__, fn %{modules: modules} ->
@@ -188,7 +189,15 @@ defmodule Bureaucrat.TypeCollector do
     "<tr><td>#{key}</td><td>[#{type_module}](##{type_module})</td></tr>"
   end
 
+  defp write_type({{_, key}, value_type}, _) when is_function(key) do
+    key = key |> Function.info() |> Keyword.get(:module)
+    "<tr><td>#{key}</td><td>#{value_type}</td></tr>"
+  end
+
   defp write_type({key, value_type}, _), do: "<tr><td>#{key}</td><td>#{value_type}</td></tr>"
+
+  defp json_view(%{"json" => module}), do: module
+  defp json_view(module), do: module
 
   defp normalize_name(%{_: module}), do: normalize_name(module)
   defp normalize_name(module), do: module |> Module.split() |> Enum.at(-1)
